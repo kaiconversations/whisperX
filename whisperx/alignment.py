@@ -17,9 +17,6 @@ from .types import AlignedTranscriptionResult, SingleSegment, SingleAlignedSegme
 
 import spacy
 
-
-PUNKT_ABBREVIATIONS = ['dr', 'vs', 'mr', 'mrs', 'prof']
-
 LANGUAGES_WITHOUT_SPACES = ["ja", "zh"]
 
 DEFAULT_ALIGN_MODELS_TORCH = {
@@ -102,9 +99,27 @@ def load_align_model(language_code, device, model_name=None, model_dir=None):
     return align_model, align_metadata
 
 
+def load_tokenizer_model(language_code) -> spacy.Language:
+    tokenizer_model = SPACY_LANGUAGE_MODELS.get(language_code)
+    if tokenizer_model:
+        nlp = spacy.load(tokenizer_model)
+        nlp.disable_pipe("parser")
+        nlp.enable_pipe("senter")
+        return nlp
+    else:
+        try:
+            custom_language = __import__(f"spacy.lang.{language_code}", fromlist=[language_code])
+            nlp = custom_language()
+            return nlp
+        except ModuleNotFoundError:
+            print(f"Language code {language_code} not supported by Tokenizer")
+            raise RuntimeError("Unable to load Tokenizer")
+
+
 def align(
     transcript: Iterable[SingleSegment],
     model: torch.nn.Module,
+    tokenizer: spacy.Language,
     align_model_metadata: dict,
     audio: Union[str, np.ndarray, torch.Tensor],
     device: str,
@@ -170,22 +185,8 @@ def align(
             if any([c in model_dictionary.keys() for c in wrd]):
                 clean_wdx.append(wdx)
 
-        # Check if SpaCy language pipeline is available
-        tokenizer_model = SPACY_LANGUAGE_MODELS.get(model_lang)
-        if tokenizer_model:
-            nlp = spacy.load(tokenizer_model)
-            nlp.disable_pipe("parser")
-            nlp.enable_pipe("senter")
-            doc = nlp(text)
-            sentence_spans = [(sent.start, sent.end) for sent in doc.sents]
-        else:
-            language = __import__(f"spacy.lang.{model_lang}", fromlist=[model_lang])
-            if language:
-                nlp = language()
-                doc = nlp(text)
-                sentence_spans = [(sent.start, sent.end) for sent in doc.sents]
-            else:
-                sentence_spans = [(0, len(text))]
+        tokenized_text = tokenizer(text)
+        sentence_spans = [(sent.start_char, sent.end_char) for sent in tokenized_text.sents]
 
         segment["clean_char"] = clean_char
         segment["clean_cdx"] = clean_cdx
