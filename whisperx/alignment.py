@@ -14,8 +14,9 @@ from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from .audio import SAMPLE_RATE, load_audio
 from .utils import interpolate_nans
 from .types import AlignedTranscriptionResult, SingleSegment, SingleAlignedSegment, SingleWordSegment
-import nltk
-from nltk.tokenize.punkt import PunktSentenceTokenizer, PunktParameters
+
+import spacy
+
 
 PUNKT_ABBREVIATIONS = ['dr', 'vs', 'mr', 'mrs', 'prof']
 
@@ -51,6 +52,17 @@ DEFAULT_ALIGN_MODELS_HF = {
     "ur": "kingabzpro/wav2vec2-large-xls-r-300m-Urdu",
     "te": "anuragshas/wav2vec2-large-xlsr-53-telugu",
     "hi": "theainerd/Wav2Vec2-large-xlsr-hindi"
+}
+
+SPACY_LANGUAGE_MODELS = {
+    "zh": "zh_core_web_sm",
+    "en": "en_core_web_sm",
+    "fr": "fr_core_news_sm",
+    "de": "de_core_news_sm",
+    "it": "it_core_news_sm",
+    "ja": "ja_core_news_sm",
+    "pt": "pt_core_news_sm",
+    "es": "es_core_news_sm",
 }
 
 
@@ -158,11 +170,22 @@ def align(
             if any([c in model_dictionary.keys() for c in wrd]):
                 clean_wdx.append(wdx)
 
-                
-        punkt_param = PunktParameters()
-        punkt_param.abbrev_types = set(PUNKT_ABBREVIATIONS)
-        sentence_splitter = PunktSentenceTokenizer(punkt_param)
-        sentence_spans = list(sentence_splitter.span_tokenize(text))
+        # Check if SpaCy language pipeline is available
+        tokenizer_model = SPACY_LANGUAGE_MODELS.get(model_lang)
+        if tokenizer_model:
+            nlp = spacy.load(tokenizer_model)
+            nlp.disable_pipe("parser")
+            nlp.enable_pipe("senter")
+            doc = nlp(text)
+            sentence_spans = [(sent.start, sent.end) for sent in doc.sents]
+        else:
+            language = __import__(f"spacy.lang.{model_lang}", fromlist=[model_lang])
+            if language:
+                nlp = language()
+                doc = nlp(text)
+                sentence_spans = [(sent.start, sent.end) for sent in doc.sents]
+            else:
+                sentence_spans = [(0, len(text))]
 
         segment["clean_char"] = clean_char
         segment["clean_cdx"] = clean_cdx
