@@ -17,7 +17,8 @@ from .types import AlignedTranscriptionResult, SingleSegment, SingleAlignedSegme
 
 import spacy
 
-LANGUAGES_WITHOUT_SPACES = ["ja", "zh"]
+LANGUAGES_WITHOUT_SPACES = []
+ADD_SPACES_LANGUAGES = ["ja", "zh"]
 
 DEFAULT_ALIGN_MODELS_TORCH = {
     "en": "WAV2VEC2_ASR_BASE_960H",
@@ -148,21 +149,32 @@ def align(
     # 1. Preprocess to keep only characters in dictionary
     total_segments = len(transcript)
     for sdx, segment in enumerate(transcript):
+        # split into words using tokenizer
+        tokenized_text = tokenizer(segment["text"])
+
+        if model_lang in ADD_SPACES_LANGUAGES:
+            spaced_text = ""
+            for token in tokenized_text:
+                if token.is_punct:
+                    spaced_text = spaced_text.rstrip()
+                    spaced_text += token.text + " "
+                else:
+                    spaced_text += token.text + " "
+            text = spaced_text.rstrip()
+        else:
+            text = tokenized_text.text
+
+        transcript[sdx]['text'] = text
+        per_word = text.split(" ")
+
         # strip spaces at beginning / end, but keep track of the amount.
         if print_progress:
             base_progress = ((sdx + 1) / total_segments) * 100
             percent_complete = (50 + base_progress / 2) if combined_progress else base_progress
             print(f"Progress: {percent_complete:.2f}%...")
-            
-        num_leading = len(segment["text"]) - len(segment["text"].lstrip())
-        num_trailing = len(segment["text"]) - len(segment["text"].rstrip())
-        text = segment["text"]
 
-        # split into words
-        if model_lang not in LANGUAGES_WITHOUT_SPACES:
-            per_word = text.split(" ")
-        else:
-            per_word = text
+        num_leading = len(text) - len(text.lstrip())
+        num_trailing = len(text) - len(text.rstrip())
 
         clean_char, clean_cdx = [], []
         for cdx, char in enumerate(text):
@@ -358,7 +370,7 @@ def align(
             agg_dict["text"] = "".join
         if return_char_alignments:
             agg_dict["chars"] = "sum"
-        aligned_subsegments= aligned_subsegments.groupby(["start", "end"], as_index=False).agg(agg_dict)
+        aligned_subsegments = aligned_subsegments.groupby(["start", "end"], as_index=False).agg(agg_dict)
         aligned_subsegments = aligned_subsegments.to_dict('records')
         aligned_segments += aligned_subsegments
 
