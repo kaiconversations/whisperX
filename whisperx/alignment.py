@@ -14,12 +14,11 @@ from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
 from .audio import SAMPLE_RATE, load_audio
 from .utils import interpolate_nans
 from .types import AlignedTranscriptionResult, SingleSegment, SingleAlignedSegment, SingleWordSegment
-import nltk
-from nltk.tokenize.punkt import PunktSentenceTokenizer, PunktParameters
 
-PUNKT_ABBREVIATIONS = ['dr', 'vs', 'mr', 'mrs', 'prof']
+import spacy
 
-LANGUAGES_WITHOUT_SPACES = ["ja", "zh"]
+LANGUAGES_WITHOUT_SPACES = []
+ADD_SPACES_LANGUAGES = ["ja", "zh"]
 
 DEFAULT_ALIGN_MODELS_TORCH = {
     "en": "WAV2VEC2_ASR_BASE_960H",
@@ -51,6 +50,17 @@ DEFAULT_ALIGN_MODELS_HF = {
     "ur": "kingabzpro/wav2vec2-large-xls-r-300m-Urdu",
     "te": "anuragshas/wav2vec2-large-xlsr-53-telugu",
     "hi": "theainerd/Wav2Vec2-large-xlsr-hindi"
+}
+
+SPACY_LANGUAGE_MODELS = {
+    "zh": "zh_core_web_sm",
+    "en": "en_core_web_sm",
+    "fr": "fr_core_news_sm",
+    "de": "de_core_news_sm",
+    "it": "it_core_news_sm",
+    "ja": "ja_core_news_sm",
+    "pt": "pt_core_news_sm",
+    "es": "es_core_news_sm",
 }
 
 
@@ -90,9 +100,27 @@ def load_align_model(language_code, device, model_name=None, model_dir=None):
     return align_model, align_metadata
 
 
+def load_tokenizer_model(language_code) -> spacy.Language:
+    tokenizer_model = SPACY_LANGUAGE_MODELS.get(language_code)
+    if tokenizer_model:
+        nlp = spacy.load(tokenizer_model)
+        nlp.disable_pipe("parser")
+        nlp.enable_pipe("senter")
+        return nlp
+    else:
+        try:
+            custom_language = __import__(f"spacy.lang.{language_code}", fromlist=[language_code])
+            nlp = custom_language()
+            return nlp
+        except ModuleNotFoundError:
+            print(f"Language code {language_code} not supported by Tokenizer")
+            raise RuntimeError("Unable to load Tokenizer")
+
+
 def align(
     transcript: Iterable[SingleSegment],
     model: torch.nn.Module,
+    tokenizer: spacy.Language,
     align_model_metadata: dict,
     audio: Union[str, np.ndarray, torch.Tensor],
     device: str,
@@ -121,21 +149,32 @@ def align(
     # 1. Preprocess to keep only characters in dictionary
     total_segments = len(transcript)
     for sdx, segment in enumerate(transcript):
+        # split into words using tokenizer
+        tokenized_text = tokenizer(segment["text"])
+
+        if model_lang in ADD_SPACES_LANGUAGES:
+            spaced_text = ""
+            for token in tokenized_text:
+                if token.is_punct:
+                    spaced_text = spaced_text.rstrip()
+                    spaced_text += token.text + " "
+                else:
+                    spaced_text += token.text + " "
+            text = spaced_text.rstrip()
+        else:
+            text = tokenized_text.text
+
+        transcript[sdx]['text'] = text
+        per_word = text.split(" ")
+
         # strip spaces at beginning / end, but keep track of the amount.
         if print_progress:
             base_progress = ((sdx + 1) / total_segments) * 100
             percent_complete = (50 + base_progress / 2) if combined_progress else base_progress
             print(f"Progress: {percent_complete:.2f}%...")
-            
-        num_leading = len(segment["text"]) - len(segment["text"].lstrip())
-        num_trailing = len(segment["text"]) - len(segment["text"].rstrip())
-        text = segment["text"]
 
-        # split into words
-        if model_lang not in LANGUAGES_WITHOUT_SPACES:
-            per_word = text.split(" ")
-        else:
-            per_word = text
+        num_leading = len(text) - len(text.lstrip())
+        num_trailing = len(text) - len(text.rstrip())
 
         clean_char, clean_cdx = [], []
         for cdx, char in enumerate(text):
@@ -158,11 +197,8 @@ def align(
             if any([c in model_dictionary.keys() for c in wrd]):
                 clean_wdx.append(wdx)
 
-                
-        punkt_param = PunktParameters()
-        punkt_param.abbrev_types = set(PUNKT_ABBREVIATIONS)
-        sentence_splitter = PunktSentenceTokenizer(punkt_param)
-        sentence_spans = list(sentence_splitter.span_tokenize(text))
+        tokenized_text = tokenizer(text)
+        sentence_spans = [(sent.start_char, sent.end_char) for sent in tokenized_text.sents]
 
         segment["clean_char"] = clean_char
         segment["clean_cdx"] = clean_cdx
@@ -334,7 +370,7 @@ def align(
             agg_dict["text"] = "".join
         if return_char_alignments:
             agg_dict["chars"] = "sum"
-        aligned_subsegments= aligned_subsegments.groupby(["start", "end"], as_index=False).agg(agg_dict)
+        aligned_subsegments = aligned_subsegments.groupby(["start", "end"], as_index=False).agg(agg_dict)
         aligned_subsegments = aligned_subsegments.to_dict('records')
         aligned_segments += aligned_subsegments
 
