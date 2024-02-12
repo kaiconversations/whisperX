@@ -109,10 +109,9 @@ def load_tokenizer_model(language_code) -> spacy.Language:
         return nlp
     else:
         try:
-            custom_language = __import__(f"spacy.lang.{language_code}", fromlist=[language_code])
-            nlp = custom_language()
-            return nlp
-        except ModuleNotFoundError:
+            print(f"No pipeline available for {language_code}, attempting to create blank tokenizer.")
+            return spacy.blank(language_code)
+        except ImportError:
             print(f"Language code {language_code} not supported by Tokenizer")
             raise RuntimeError("Unable to load Tokenizer")
 
