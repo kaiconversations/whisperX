@@ -100,20 +100,19 @@ def load_align_model(language_code, device, model_name=None, model_dir=None):
     return align_model, align_metadata
 
 
-def load_tokenizer_model(language_code) -> spacy.Language:
-    tokenizer_model = SPACY_LANGUAGE_MODELS.get(language_code)
-    if tokenizer_model:
-        nlp = spacy.load(tokenizer_model)
-        nlp.disable_pipe("parser")
-        nlp.enable_pipe("senter")
+def load_tokenizer_model(language_code: str) -> spacy.Language:
+    try:
+        tokenizer_model = SPACY_LANGUAGE_MODELS.get(language_code, None)
+        nlp = spacy.load(tokenizer_model) if tokenizer_model else spacy.blank(language_code)
+        if 'senter' and 'parser' in nlp.component_names:
+            nlp.disable_pipe('parser')
+            nlp.enable_pipe('senter')
+        else:
+            nlp.add_pipe('sentencizer')
         return nlp
-    else:
-        try:
-            print(f"No pipeline available for {language_code}, attempting to create blank tokenizer.")
-            return spacy.blank(language_code)
-        except ImportError:
-            print(f"Language code {language_code} not supported by Tokenizer")
-            raise RuntimeError("Unable to load Tokenizer")
+    except ImportError:
+        print(f"Language code {language_code} not supported by SpaCy")
+        raise RuntimeError("Unable to load Tokenizer")
 
 
 def align(
