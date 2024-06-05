@@ -49,7 +49,11 @@ DEFAULT_ALIGN_MODELS_HF = {
     "ko": "kresnik/wav2vec2-large-xlsr-korean",
     "ur": "kingabzpro/wav2vec2-large-xls-r-300m-Urdu",
     "te": "anuragshas/wav2vec2-large-xlsr-53-telugu",
-    "hi": "theainerd/Wav2Vec2-large-xlsr-hindi"
+    "hi": "theainerd/Wav2Vec2-large-xlsr-hindi",
+    "ca": "softcatala/wav2vec2-large-xlsr-catala",
+    "ml": "gvs/wav2vec2-large-xlsr-malayalam",
+    "no": "NbAiLab/nb-wav2vec2-1b-bokmaal",
+    "nn": "NbAiLab/nb-wav2vec2-300m-nynorsk",
 }
 
 SPACY_LANGUAGE_MODELS = {
@@ -228,8 +232,8 @@ def align(
             aligned_segments.append(aligned_seg)
             continue
 
-        if t1 >= MAX_DURATION or t2 - t1 < 0.02:
-            print("Failed to align segment: original start time longer than audio duration, skipping...")
+        if t1 >= MAX_DURATION:
+            print(f'Failed to align segment ("{segment["text"]}"): original start time longer than audio duration, skipping...')
             aligned_segments.append(aligned_seg)
             continue
 
@@ -241,17 +245,17 @@ def align(
 
         # TODO: Probably can get some speedup gain with batched inference here
         waveform_segment = audio[:, f1:f2]
+        # Handle the minimum input length for wav2vec2 models
+        if waveform_segment.shape[-1] < 400:
+            lengths = torch.as_tensor([waveform_segment.shape[-1]]).to(device)
+            waveform_segment = torch.nn.functional.pad(
+                waveform_segment, (0, 400 - waveform_segment.shape[-1])
+            )
+        else:
+            lengths = None
 
         with torch.inference_mode():
             if model_type == "torchaudio":
-                # Handle the minimum input length for torchaudio wav2vec2 models
-                if waveform_segment.shape[-1] < 400:
-                    lengths = torch.as_tensor([waveform_segment.shape[-1]]).to(device)
-                    waveform_segment = torch.nn.functional.pad(
-                        waveform_segment, (0, 400 - waveform_segment.shape[-1])
-                    )
-                else:
-                    lengths = None
                 emissions, _ = model(waveform_segment.to(device), lengths=lengths)
             elif model_type == "huggingface":
                 emissions = model(waveform_segment.to(device)).logits
@@ -317,7 +321,8 @@ def align(
         
             sentence_text = text[sstart:send]
             sentence_start = curr_chars["start"].min()
-            sentence_end = curr_chars["end"].max()
+            end_chars = curr_chars[curr_chars["char"] != ' ']
+            sentence_end = end_chars["end"].max()
             sentence_words = []
 
             for word_idx in curr_chars["word-idx"].unique():
