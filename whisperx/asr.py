@@ -1,12 +1,14 @@
 """
-Essentially a wrapper for faster-whisper which fits in with our current WhisperX implementation
+Essentially added additional inference method which uses the faster-whisper batched inference pipeline instead of
+WhisperX pipeline which doesn't work for arabic-english code switching.
+
 For use with experimental version of faster-whisper https://github.com/SYSTRAN/faster-whisper/pull/936
 Run "pip install git+https://github.com/MahmoudAshraf97/faster-whisper.git@same_vad" to install
+This version doesn't change the WhisperModel class which is used by whisperX for the legacy inference method, but does
+provide the faster-whisper.BatchedInferencePipeline so for now it's our best bet.
 
-Although experimental, this appears to be the next iteration of faster-whisper, and in an effort to switch away from
-WhisperX to faster-whisper this step makes sense.
-
-Will not work with the CLI.
+This has been designed such that minial changes are required to the transcription engine as both pipelines use the same
+function names.
 """
 import logging
 import os
@@ -16,7 +18,7 @@ import ctranslate2
 import numpy as np
 import faster_whisper
 import torch
-from faster_whisper.transcribe import TranscriptionOptions, get_suppressed_tokens, Segment, TranscriptionInfo
+from faster_whisper.transcribe import TranscriptionOptions, get_suppressed_tokens
 
 from transformers import Pipeline
 from transformers.pipelines.pt_utils import PipelineIterator
