@@ -1,30 +1,17 @@
-"""
-Essentially a wrapper for faster-whisper which fits in with our current WhisperX implementation
-For use with experimental version of faster-whisper https://github.com/SYSTRAN/faster-whisper/pull/936
-Run "pip install git+https://github.com/MahmoudAshraf97/faster-whisper.git@same_vad" to install
-
-Although experimental, this appears to be the next iteration of faster-whisper, and in an effort to switch away from
-WhisperX to faster-whisper this step makes sense.
-
-Will not work with the CLI.
-"""
-import logging
 import os
-from typing import Optional, List, Union, Tuple, Iterable
+import warnings
+from typing import List, Union, Optional, NamedTuple
 
 import ctranslate2
-import numpy as np
 import faster_whisper
+import numpy as np
 import torch
-from faster_whisper.transcribe import TranscriptionOptions, get_suppressed_tokens, Segment, TranscriptionInfo
-
 from transformers import Pipeline
 from transformers.pipelines.pt_utils import PipelineIterator
 
-from .audio import N_SAMPLES, SAMPLE_RATE, log_mel_spectrogram, load_audio
+from .audio import N_SAMPLES, SAMPLE_RATE, load_audio, log_mel_spectrogram
+from .vad import load_vad_model, merge_chunks
 from .types import TranscriptionResult, SingleSegment
-from .vad import merge_chunks, load_vad_model
-
 
 def find_numeral_symbol_tokens(tokenizer):
     numeral_symbol_tokens = []
@@ -35,20 +22,13 @@ def find_numeral_symbol_tokens(tokenizer):
             numeral_symbol_tokens.append(i)
     return numeral_symbol_tokens
 
-
-class WhisperXModel(faster_whisper.WhisperModel):
-    """
+class WhisperModel(faster_whisper.WhisperModel):
+    '''
     FasterWhisperModel provides batched inference for faster-whisper.
     Currently only works in non-timestamp mode and fixed prompt for all samples in batch.
-    """
+    '''
 
-    def generate_segment_batched(
-        self,
-        features: np.ndarray,
-        tokenizer: faster_whisper.tokenizer.Tokenizer,
-        options: faster_whisper.transcribe.TranscriptionOptions,
-        encoder_output=None
-    ):
+    def generate_segment_batched(self, features: np.ndarray, tokenizer: faster_whisper.tokenizer.Tokenizer, options: faster_whisper.transcribe.TranscriptionOptions, encoder_output = None):
         batch_size = features.shape[0]
         all_tokens = []
         prompt_reset_since = 0
@@ -71,15 +51,15 @@ class WhisperXModel(faster_whisper.WhisperModel):
         )
 
         result = self.model.generate(
-            encoder_output,
-            [prompt] * batch_size,
-            beam_size=options.beam_size,
-            patience=options.patience,
-            length_penalty=options.length_penalty,
-            max_length=self.max_length,
-            suppress_blank=options.suppress_blank,
-            suppress_tokens=options.suppress_tokens,
-        )
+                encoder_output,
+                [prompt] * batch_size,
+                beam_size=options.beam_size,
+                patience=options.patience,
+                length_penalty=options.length_penalty,
+                max_length=self.max_length,
+                suppress_blank=options.suppress_blank,
+                suppress_tokens=options.suppress_tokens,
+            )
 
         tokens_batch = [x.sequences_ids[0] for x in result]
 
@@ -105,23 +85,34 @@ class WhisperXModel(faster_whisper.WhisperModel):
 
         return self.model.encode(features, to_cpu=to_cpu)
 
+class FasterWhisperPipeline(Pipeline):
+    """
+    Huggingface Pipeline wrapper for FasterWhisperModel.
+    """
+    # TODO:
+    # - add support for timestamp mode
+    # - add support for custom inference kwargs
 
-class WhisperXPipeline(Pipeline):
     def __init__(
             self,
             model,
             vad,
             vad_params: dict,
+            options : NamedTuple,
             tokenizer=None,
             device: Union[int, str, "torch.device"] = -1,
-            framework="pt",
-            language: Optional[str] = None,
+            framework = "pt",
+            language : Optional[str] = None,
+            suppress_numerals: bool = False,
             **kwargs
     ):
         self.model = model
         self.tokenizer = tokenizer
+        self.options = options
         self.preset_language = language
-        self.options = None
+        self.suppress_numerals = suppress_numerals
+        self._batch_size = kwargs.pop("batch_size", None)
+        self._num_workers = 1
         self._preprocess_params, self._forward_params, self._postprocess_params = self._sanitize_parameters(**kwargs)
         self.call_count = 0
         self.framework = framework
@@ -165,7 +156,7 @@ class WhisperXPipeline(Pipeline):
         return model_outputs
 
     def get_iterator(
-            self, inputs, num_workers: int, batch_size: int, preprocess_params, forward_params, postprocess_params
+        self, inputs, num_workers: int, batch_size: int, preprocess_params, forward_params, postprocess_params
     ):
         dataset = PipelineIterator(inputs, self.preprocess, preprocess_params)
         if "TOKENIZERS_PARALLELISM" not in os.environ:
@@ -180,35 +171,7 @@ class WhisperXPipeline(Pipeline):
         return final_iterator
 
     def transcribe(
-            self,
-            audio: Union[str, np.ndarray],
-            num_workers=0,
-            language=None,
-            task=None,
-            chunk_size=30,
-            log_progress=False,
-            beam_size: int = 5,
-            best_of: int = 5,
-            patience: float = 1,
-            length_penalty: float = 1,
-            repetition_penalty: float = 1,
-            no_repeat_ngram_size: int = 0,
-            temperature: Union[float, List[float], Tuple[float, ...]] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
-            compression_ratio_threshold: Optional[float] = 2.4,
-            log_prob_threshold: Optional[float] = -1.0,
-            log_prob_low_threshold: Optional[float] = None,
-            no_speech_threshold: Optional[float] = 0.6,
-            initial_prompt: Optional[Union[str, Iterable[int]]] = None,
-            prefix: Optional[str] = None,
-            suppress_blank: bool = True,
-            suppress_tokens: Optional[List[int]] = [-1],
-            without_timestamps: bool = True,
-            word_timestamps: bool = False,
-            prepend_punctuations: str = "\"'“¿([{-",
-            append_punctuations: str = "\"'.。,，!！?？:：”)]}、",
-            max_new_tokens: Optional[int] = None,
-            batch_size: int = 16,
-            hotwords: Optional[str] = None,
+        self, audio: Union[str, np.ndarray], batch_size=None, num_workers=0, language=None, task=None, chunk_size=30, print_progress = False, combined_progress=False
     ) -> TranscriptionResult:
         if isinstance(audio, str):
             audio = load_audio(audio)
@@ -230,66 +193,32 @@ class WhisperXPipeline(Pipeline):
         if self.tokenizer is None:
             language = language or self.detect_language(audio)
             task = task or "transcribe"
-            self.tokenizer = faster_whisper.tokenizer.Tokenizer(
-                self.model.hf_tokenizer,
-                self.model.model.is_multilingual,
-                task=task,
-                language=language
-            )
+            self.tokenizer = faster_whisper.tokenizer.Tokenizer(self.model.hf_tokenizer,
+                                                                self.model.model.is_multilingual, task=task,
+                                                                language=language)
         else:
             language = language or self.tokenizer.language_code
             task = task or self.tokenizer.task
             if task != self.tokenizer.task or language != self.tokenizer.language_code:
-                self.tokenizer = faster_whisper.tokenizer.Tokenizer(
-                    self.model.hf_tokenizer,
-                    self.model.model.is_multilingual,
-                    task=task,
-                    language=language
-                )
-
-        options = TranscriptionOptions(
-            beam_size=beam_size,
-            best_of=best_of,
-            patience=patience,
-            length_penalty=length_penalty,
-            repetition_penalty=repetition_penalty,
-            no_repeat_ngram_size=no_repeat_ngram_size,
-            log_prob_threshold=log_prob_threshold,
-            log_prob_low_threshold=log_prob_low_threshold,
-            no_speech_threshold=no_speech_threshold,
-            compression_ratio_threshold=compression_ratio_threshold,
-            temperatures=(
-                temperature if isinstance(temperature, (list, tuple)) else [temperature]
-            ),
-            initial_prompt=initial_prompt,
-            prefix=prefix,
-            suppress_blank=suppress_blank,
-            suppress_tokens=get_suppressed_tokens(self.tokenizer, suppress_tokens),
-            prepend_punctuations=prepend_punctuations,
-            append_punctuations=append_punctuations,
-            max_new_tokens=max_new_tokens,
-            hotwords=hotwords,
-            word_timestamps=word_timestamps,
-            hallucination_silence_threshold=None,
-            condition_on_previous_text=False,
-            clip_timestamps="0",
-            prompt_reset_on_temperature=0.5,
-            multilingual=False,
-            output_language=None,
-            without_timestamps=without_timestamps,
-            max_initial_timestamp=0.0,
-        )
-
-        self.options = options
-
-        self.options = options
+                self.tokenizer = faster_whisper.tokenizer.Tokenizer(self.model.hf_tokenizer,
+                                                                    self.model.model.is_multilingual, task=task,
+                                                                    language=language)
+                
+        if self.suppress_numerals:
+            previous_suppress_tokens = self.options.suppress_tokens
+            numeral_symbol_tokens = find_numeral_symbol_tokens(self.tokenizer)
+            print(f"Suppressing numeral and symbol tokens")
+            new_suppressed_tokens = numeral_symbol_tokens + self.options.suppress_tokens
+            new_suppressed_tokens = list(set(new_suppressed_tokens))
+            self.options = self.options._replace(suppress_tokens=new_suppressed_tokens)
 
         segments: List[SingleSegment] = []
+        batch_size = batch_size or self._batch_size
         total_segments = len(vad_segments)
         for idx, out in enumerate(self.__call__(data(audio, vad_segments), batch_size=batch_size, num_workers=num_workers)):
-            if log_progress:
+            if print_progress:
                 base_progress = ((idx + 1) / total_segments) * 100
-                percent_complete = base_progress / 2
+                percent_complete = base_progress / 2 if combined_progress else base_progress
                 print(f"Progress: {percent_complete:.2f}%...")
             text = out['text']
             if batch_size in [0, 1, None]:
@@ -306,7 +235,12 @@ class WhisperXPipeline(Pipeline):
         if self.preset_language is None:
             self.tokenizer = None
 
+        # revert suppressed tokens if suppress_numerals is enabled
+        if self.suppress_numerals:
+            self.options = self.options._replace(suppress_tokens=previous_suppress_tokens)
+
         return {"segments": segments, "language": language}
+
 
     def detect_language(self, audio: np.ndarray):
         if audio.shape[0] < N_SAMPLES:
@@ -322,94 +256,103 @@ class WhisperXPipeline(Pipeline):
         print(f"Detected language: {language} ({language_probability:.2f}) in first 30s of audio...")
         return language
 
-
-class BatchedFasterWhisperPipeline(faster_whisper.BatchedInferencePipeline):
-    def __init__(
-            self,
-            whisper_model: faster_whisper.WhisperModel,
-            language: Optional[str] = None,
-    ):
-        super().__init__(whisper_model, language=language)
-
-    def transcribe(self, audio: Union[str, np.ndarray], **kwargs):
-        segments, info = super().transcribe(audio, **kwargs)
-
-        test = list(segments)
-
-        whisperx_segments = []
-        for segment in segments:
-            whisperx_segments.append(SingleSegment(
-                text=segment.text,
-                start=segment.start,
-                end=segment.end
-            ))
-
-        return TranscriptionResult(
-            segments=whisperx_segments,
-            language=self.preset_language,
-        )
-
-
-def load_model(
-        model_name: str,
-        inference_type: str = "legacy",
-        device: str = "cuda",
-        device_index: int = 0,
-        compute_type: str = "float16",
-        cpu_threads: int = 4,
-        num_workers: int = 1,
-        task: str = "transcribe",
-        language: str = None,
-        download_root: Optional[str] = None,
-):
-    """Load a Whisper model for inference.
-
+def load_model(whisper_arch,
+               device,
+               device_index=0,
+               compute_type="float16",
+               asr_options=None,
+               language : Optional[str] = None,
+               vad_model=None,
+               vad_options=None,
+               model : Optional[WhisperModel] = None,
+               task="transcribe",
+               download_root=None,
+               threads=4):
+    '''Load a Whisper model for inference.
     Args:
-        model_name (str): The model name to load.
-        inference_type (str): WhisperX implementation = "legacy" or experimental faster-whisper "experimental"
-        device (str): The device to use for inference.
-        compute_type (str): The compute type to use for inference.
-        num_workers (int): The number of workers to use for inference.
-        language (str): The language to use for inference.
-        download_root (str): The root directory to download models to.
-    """
+        whisper_arch: str - The name of the Whisper model to load.
+        device: str - The device to load the model on.
+        compute_type: str - The compute type to use for the model.
+        options: dict - A dictionary of options to use for the model.
+        language: str - The language of the model. (use English for now)
+        model: Optional[WhisperModel] - The WhisperModel instance to use.
+        download_root: Optional[str] - The root directory to download the model to.
+        threads: int - The number of cpu threads to use per worker, e.g. will be multiplied by num workers.
+    Returns:
+        A Whisper pipeline.
+    '''
 
-    logging.info("NEW WHISPER")
+    if whisper_arch.endswith(".en"):
+        language = "en"
 
-    if inference_type == "experimental":
-        model = faster_whisper.WhisperModel(
-            model_name,
-            device=device,
-            device_index=device_index,
-            compute_type=compute_type,
-            num_workers=num_workers,
-            download_root=download_root
-        )
-        return BatchedFasterWhisperPipeline(
-            model,
-            language=language
-        )
-    else:
-        model = WhisperXModel(
-            model_name,
-            device=device,
-            device_index=device_index,
-            compute_type=compute_type,
-            download_root=download_root,
-            cpu_threads=cpu_threads
-        )
-
+    model = model or WhisperModel(whisper_arch,
+                         device=device,
+                         device_index=device_index,
+                         compute_type=compute_type,
+                         download_root=download_root,
+                         cpu_threads=threads)
+    if language is not None:
         tokenizer = faster_whisper.tokenizer.Tokenizer(model.hf_tokenizer, model.model.is_multilingual, task=task, language=language)
-        default_vad_options = {
-            "vad_onset": 0.500,
-            "vad_offset": 0.363
-        }
+    else:
+        print("No language specified, language will be first be detected for each audio file (increases inference time).")
+        tokenizer = None
+
+    default_asr_options =  {
+        "beam_size": 5,
+        "best_of": 5,
+        "patience": 1,
+        "length_penalty": 1,
+        "repetition_penalty": 1,
+        "no_repeat_ngram_size": 0,
+        "temperatures": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        "compression_ratio_threshold": 2.4,
+        "log_prob_threshold": -1.0,
+        "no_speech_threshold": 0.6,
+        "condition_on_previous_text": False,
+        "prompt_reset_on_temperature": 0.5,
+        "initial_prompt": None,
+        "prefix": None,
+        "suppress_blank": True,
+        "suppress_tokens": [-1],
+        "without_timestamps": True,
+        "max_initial_timestamp": 0.0,
+        "word_timestamps": False,
+        "prepend_punctuations": "\"'“¿([{-",
+        "append_punctuations": "\"'.。,，!！?？:：”)]}、",
+        "suppress_numerals": False,
+        "max_new_tokens": None,
+        "clip_timestamps": None,
+        "hallucination_silence_threshold": None,
+        "hotwords": None,
+    }
+
+    if asr_options is not None:
+        default_asr_options.update(asr_options)
+
+    suppress_numerals = default_asr_options["suppress_numerals"]
+    del default_asr_options["suppress_numerals"]
+
+    default_asr_options = faster_whisper.transcribe.TranscriptionOptions(**default_asr_options)
+
+    default_vad_options = {
+        "vad_onset": 0.500,
+        "vad_offset": 0.363
+    }
+
+    if vad_options is not None:
+        default_vad_options.update(vad_options)
+
+    if vad_model is not None:
+        vad_model = vad_model
+    else:
         vad_model = load_vad_model(torch.device(device), use_auth_token=None, **default_vad_options)
 
-        return WhisperXPipeline(
-            model,
-            vad=vad_model,
-            vad_params=default_vad_options,
-            tokenizer=tokenizer,
-            language=language,
-        )
+    return FasterWhisperPipeline(
+        model=model,
+        vad=vad_model,
+        options=default_asr_options,
+        tokenizer=tokenizer,
+        language=language,
+        suppress_numerals=suppress_numerals,
+        vad_params=default_vad_options,
+    )
