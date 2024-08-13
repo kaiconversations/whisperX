@@ -10,6 +10,7 @@ provide the faster-whisper.BatchedInferencePipeline so for now it's our best bet
 This has been designed such that minial changes are required to the transcription engine as both pipelines use the same
 function names.
 """
+import inspect
 import logging
 import os
 from typing import Optional, List, Union, Tuple, Iterable
@@ -332,12 +333,12 @@ class BatchedFasterWhisperPipeline(faster_whisper.BatchedInferencePipeline):
             language: Optional[str] = None,
     ):
         super().__init__(whisper_model, language=language)
+        transcribe_signature = inspect.signature(super().transcribe)
+        self.valid_params = transcribe_signature.parameters.keys()
 
     def transcribe(self, audio: Union[str, np.ndarray], **kwargs):
-        segments, info = super().transcribe(audio, **kwargs)
-
-        test = list(segments)
-
+        valid_kwargs = {k: v for k, v in kwargs.items() if k in self.valid_params}
+        segments, info = super().transcribe(audio, **valid_kwargs)
         whisperx_segments = []
         for segment in segments:
             whisperx_segments.append(SingleSegment(
