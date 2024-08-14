@@ -11,7 +11,6 @@ This has been designed such that minial changes are required to the transcriptio
 function names.
 """
 import inspect
-import logging
 import os
 from typing import Optional, List, Union, Tuple, Iterable
 
@@ -184,7 +183,7 @@ class WhisperXPipeline(Pipeline):
 
     def transcribe(
             self,
-            audio: Union[str, np.ndarray],
+            audio: np.ndarray,
             num_workers=0,
             language=None,
             task=None,
@@ -336,7 +335,7 @@ class BatchedFasterWhisperPipeline(faster_whisper.BatchedInferencePipeline):
         transcribe_signature = inspect.signature(super().transcribe)
         self.valid_params = transcribe_signature.parameters.keys()
 
-    def transcribe(self, audio: Union[str, np.ndarray], **kwargs):
+    def transcribe(self, audio: np.ndarray, **kwargs):
         valid_kwargs = {k: v for k, v in kwargs.items() if k in self.valid_params}
         segments, info = super().transcribe(audio, **valid_kwargs)
         whisperx_segments = []
@@ -376,8 +375,6 @@ def load_model(
         language (str): The language to use for inference.
         download_root (str): The root directory to download models to.
     """
-
-    logging.info("NEW WHISPER")
 
     if inference_type == "experimental":
         model = faster_whisper.WhisperModel(
