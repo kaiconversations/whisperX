@@ -211,6 +211,7 @@ class WhisperXPipeline(Pipeline):
             max_new_tokens: Optional[int] = None,
             batch_size: int = 16,
             hotwords: Optional[str] = None,
+            **kwargs,
     ) -> TranscriptionResult:
         if isinstance(audio, str):
             audio = load_audio(audio)
