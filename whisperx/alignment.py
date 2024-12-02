@@ -21,19 +21,22 @@ LANGUAGES_WITHOUT_SPACES = []
 ADD_SPACES_LANGUAGES = ["ja", "zh"]
 
 DEFAULT_ALIGN_MODELS_TORCH = {
-    "en": "WAV2VEC2_ASR_BASE_960H",
+    # "en": "WAV2VEC2_ASR_BASE_960H",
     "fr": "VOXPOPULI_ASR_BASE_10K_FR",
     "de": "VOXPOPULI_ASR_BASE_10K_DE",
-    "es": "VOXPOPULI_ASR_BASE_10K_ES",
+    # "es": "VOXPOPULI_ASR_BASE_10K_ES",
     "it": "VOXPOPULI_ASR_BASE_10K_IT",
 }
 
 DEFAULT_ALIGN_MODELS_HF = {
+    "en": "voidful/wav2vec2-xlsr-multilingual-56",
+    "es": "voidful/wav2vec2-xlsr-multilingual-56",
     "ja": "jonatasgrosman/wav2vec2-large-xlsr-53-japanese",
     "zh": "jonatasgrosman/wav2vec2-large-xlsr-53-chinese-zh-cn",
     "nl": "jonatasgrosman/wav2vec2-large-xlsr-53-dutch",
     "uk": "Yehor/wav2vec2-xls-r-300m-uk-with-small-lm",
-    "pt": "jonatasgrosman/wav2vec2-large-xlsr-53-portuguese",
+    # "pt": "jonatasgrosman/wav2vec2-large-xlsr-53-portuguese",
+    "pt": "voidful/wav2vec2-xlsr-multilingual-56",
     "ar": "voidful/wav2vec2-xlsr-multilingual-56",
     "cs": "comodoro/wav2vec2-xls-r-300m-cs-250",
     "ru": "jonatasgrosman/wav2vec2-large-xlsr-53-russian",
